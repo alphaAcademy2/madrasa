@@ -13,23 +13,37 @@ const fmtDate = d => d ? new Date(d).toLocaleDateString("en-IN",{day:"2-digit",m
 
 async function api(action, payload={}, method="POST"){
   if(CONFIG.API_URL.includes("PASTE_YOUR")){
-    throw new Error("Google Apps Script API URL is not configured. Set window.MADRASA_API_URL in worker.js.");
+    throw new Error("Google Apps Script API URL is not configured. Open config.js and paste the deployed /exec URL.");
   }
   const body = JSON.stringify({action, payload, session: localStorage.getItem("madrasa_session") || ""});
-  const res = await fetch(CONFIG.API_URL,{method,headers:{"Content-Type":"text/plain;charset=utf-8"},body});
-  const json = await res.json();
-  if(!json.success) throw new Error(json.message || "API request failed");
-  return json.data;
+  const controller = new AbortController();
+  const timer = setTimeout(()=>controller.abort(), 20000);
+  try{
+    const res = await fetch(CONFIG.API_URL,{method,headers:{"Content-Type":"text/plain;charset=utf-8"},body,redirect:"follow",signal:controller.signal});
+    const text = await res.text();
+    const trimmed = text.trim();
+    if(!trimmed) throw new Error(`Google Apps Script returned an empty response (HTTP ${res.status}). Check the Web App deployment.`);
+    if(trimmed.startsWith("<")){
+      const title = (trimmed.match(/<title[^>]*>([\s\S]*?)<\/title>/i)||[])[1] || "HTML response";
+      throw new Error(`Google Apps Script returned HTML instead of JSON (${title.replace(/<[^>]+>/g,"").trim()}). Check that the URL ends with /exec, the deployment is accessible to Anyone, and the script is deployed as Me.`);
+    }
+    let json;
+    try{ json=JSON.parse(trimmed); }
+    catch(err){ throw new Error(`Invalid API response. HTTP ${res.status}: ${trimmed.slice(0,180)}`); }
+    if(!json.success) throw new Error(json.message || "API request failed");
+    return json.data;
+  }catch(err){
+    if(err.name==="AbortError") throw new Error("API request timed out. Check Google Apps Script deployment and internet connection.");
+    throw err;
+  }finally{ clearTimeout(timer); }
 }
 
 function route(){
   const rawPath = location.pathname.replace(/\/+$/,"") || "/"; const p = (CONFIG.BASE_PATH && rawPath.startsWith(CONFIG.BASE_PATH)) ? (rawPath.slice(CONFIG.BASE_PATH.length) || "/") : rawPath;
   const parts = p.split("/").filter(Boolean);
   if(parts[0]==="student") return {name:"student",id:parts[1]||""};
-  if(parts[0]==="admin") return {name:"admin"};
-  if(parts[0]==="usthad") return {name:"usthad"};
-  if(parts[0]==="notices") return {name:"notices"};
-  if(parts[0]==="programs") return {name:"programs"};
+  const known=["admin","usthad","students","teachers","classes","attendance","ce","activities","exams","notices","programs","reports","settings"];
+  if(known.includes(parts[0])) return {name:parts[0]};
   return {name:"home"};
 }
 window.addEventListener("popstate",render);
@@ -65,7 +79,7 @@ async function render(){
     if(state.user) return renderDashboard(state.user.role==="ADMIN"?"admin":"usthad");
     qs("#app").innerHTML=`<div class="login-page"><div class="login-card"><div class="brand-mark">HI</div><h1>HIMAYATHUL ISLAM MADRASA</h1><p>NADUVATHUR · Samastha Registration No: 737</p><div class="actions"><a class="btn btn-primary" href="/admin" data-link="/admin">Admin / Usthad Login</a><a class="btn" href="/notices" data-link="/notices">Public Notices</a></div><div class="login-help">Student QR links open the student's permitted page directly.</div></div></div>`; return;
   }
-  if(!state.user){history.replaceState({}, "", "/");return render();}
+  if(!state.user){history.replaceState({}, "", (CONFIG.BASE_PATH||"")+"/");return render();}
   return renderDashboard(r.name);
 }
 
@@ -74,7 +88,7 @@ async function doLogin(e){
   try{ const d=await api("login",{username:f.get("username"),password:f.get("password")}); localStorage.setItem("madrasa_session",d.session); state.user=d.user; history.pushState({}, "", d.user.role==="ADMIN"?"/admin":"/usthad"); render();}
   catch(x){err.textContent=x.message;err.classList.remove("hidden");}
 }
-function logout(){localStorage.removeItem("madrasa_session");state.user=null;history.pushState({}, "", "/");render();}
+function logout(){localStorage.removeItem("madrasa_session");state.user=null;history.pushState({}, "", (CONFIG.BASE_PATH||"")+"/");render();}
 
 async function renderStudent(studentId){
   qs("#app").innerHTML=`<div class="login-page"><div class="login-card"><div class="brand-mark">HI</div><h1>Student Portal</h1><p>Loading student profile…</p></div></div>`;
